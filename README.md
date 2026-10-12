@@ -73,3 +73,4 @@ npm run dev
 - **Vercel 환경변수**는 `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`만 등록하세요. 값이 없으면 빌드가 실패하도록 막아 두었습니다(인증 없는 데모 모드로 공개되는 사고 방지).
 - `service_role` 키, 개인 액세스 토큰(GitHub/Vercel/Supabase)은 앱에 필요하지 않으니 프로젝트 폴더의 `.env`에 두지 마세요.
 - 새 테이블을 만들 때는 반드시 RLS를 켜고 정책을 추가하세요.
+- 대시보드에서 직접 해야 하는 보안 설정은 [docs/SECURITY-CHECKLIST.md](docs/SECURITY-CHECKLIST.md)에 정리되어 있습니다.
