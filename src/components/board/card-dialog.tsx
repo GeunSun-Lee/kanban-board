@@ -27,6 +27,7 @@ export function CardDialog({
   comments,
   activity,
   me,
+  isAdmin,
   onClose,
 }: {
   card: Card;
@@ -39,6 +40,8 @@ export function CardDialog({
   /** 이 카드의 활동(최신순) */
   activity: Activity[];
   me: string;
+  /** 관리자는 다른 사람의 댓글도 삭제할 수 있다 (실제 권한은 DB 가 최종 판단) */
+  isAdmin: boolean;
   onClose: () => void;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
@@ -199,7 +202,7 @@ export function CardDialog({
 
         <hr className="border-zinc-200 dark:border-zinc-800" />
 
-        <CommentsSection cardId={card.id} comments={comments} members={members} me={me} />
+        <CommentsSection cardId={card.id} comments={comments} members={members} me={me} isAdmin={isAdmin} />
 
         <details className="rounded-md border border-zinc-200 px-3 py-2 dark:border-zinc-800">
           <summary className="cursor-pointer text-xs font-medium text-zinc-500">

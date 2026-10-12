@@ -187,24 +187,28 @@ export function BoardView({ boardId }: { boardId: string }) {
   function onDragEnd({ active, over }: DragEndEvent) {
     const activeId = String(active.id);
 
-    if (active.data.current?.type === "column") {
-      if (over && over.id !== active.id) {
-        const to = columns.findIndex((c) => c.id === over.id);
-        if (to >= 0) moveColumn(activeId, to);
+    try {
+      if (active.data.current?.type === "column") {
+        if (over && over.id !== active.id) {
+          const to = columns.findIndex((c) => c.id === over.id);
+          if (to >= 0) moveColumn(activeId, to);
+        }
+      } else if (over && override) {
+        const container = findContainer(activeId);
+        const overC = findContainer(String(over.id));
+        if (container && overC === container) {
+          const list = override[container];
+          const from = list.indexOf(activeId);
+          const to = list.indexOf(String(over.id));
+          const finalList = to >= 0 && from !== to ? arrayMove(list, from, to) : list;
+          moveCard(activeId, container, finalList.indexOf(activeId));
+        }
       }
-    } else if (over && override) {
-      const container = findContainer(activeId);
-      const overC = findContainer(String(over.id));
-      if (container && overC === container) {
-        const list = override[container];
-        const from = list.indexOf(activeId);
-        const to = list.indexOf(String(over.id));
-        const finalList = to >= 0 && from !== to ? arrayMove(list, from, to) : list;
-        moveCard(activeId, container, finalList.indexOf(activeId));
-      }
+    } finally {
+      // 이동 계산에서 예외가 나도 끌던 중의 임시 배치가 화면에 남지 않게 한다
+      setActive(null);
+      setOverride(null);
     }
-    setActive(null);
-    setOverride(null);
   }
 
   function onDragCancel() {
@@ -407,6 +411,7 @@ export function BoardView({ boardId }: { boardId: string }) {
           comments={state.comments.filter((c) => c.cardId === openCard.id)}
           activity={state.activity.filter((a) => a.cardId === openCard.id)}
           me={state.me}
+          isAdmin={state.isAdmin}
           onClose={() => {
             setLocalOpenId(null);
             if (paramCard) {

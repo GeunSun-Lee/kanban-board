@@ -1,5 +1,6 @@
 import { generateKeyBetween } from "fractional-indexing";
 import { useSyncExternalStore } from "react";
+import { byPosition, keyAmong } from "./ordering";
 import { isSupabaseConfigured } from "./supabase/env";
 import type {
   Activity,
@@ -292,8 +293,6 @@ export function useAppState(): AppState | null {
 // ---------------------------------------------------------------
 // 조회 헬퍼
 // ---------------------------------------------------------------
-const byPosition = <T extends { position: string }>(a: T, b: T) =>
-  a.position < b.position ? -1 : a.position > b.position ? 1 : 0;
 
 export const boardColumns = (s: AppState, boardId: string) =>
   s.columns.filter((c) => c.boardId === boardId).sort(byPosition);
@@ -450,10 +449,7 @@ export function moveColumn(id: string, toIndex: number) {
     const col = s.columns.find((c) => c.id === id);
     if (!col) return s;
     const others = boardColumns(s, col.boardId).filter((c) => c.id !== id);
-    const position = generateKeyBetween(
-      others[toIndex - 1]?.position ?? null,
-      others[toIndex]?.position ?? null,
-    );
+    const position = keyAmong(others, toIndex);
     return { ...s, columns: s.columns.map((c) => (c.id === id ? { ...c, position } : c)) };
   });
 }
@@ -586,10 +582,7 @@ export function moveCard(id: string, toColumnId: string, toIndex: number) {
     const card = s.cards.find((c) => c.id === id);
     if (!card) return s;
     const others = columnCards(s, toColumnId).filter((c) => c.id !== id);
-    const position = generateKeyBetween(
-      others[toIndex - 1]?.position ?? null,
-      others[toIndex]?.position ?? null,
-    );
+    const position = keyAmong(others, toIndex);
     const next: AppState = {
       ...s,
       cards: s.cards.map((c) => (c.id === id ? { ...c, columnId: toColumnId, position } : c)),

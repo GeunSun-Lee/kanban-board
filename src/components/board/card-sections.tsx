@@ -11,6 +11,7 @@ import {
 } from "@/lib/demo-store";
 import { LABEL_COLORS, type Card, type Comment, type Label, type LabelColor, type Member } from "@/lib/types";
 import { relativeTime } from "@/lib/format";
+import { splitMentions } from "@/lib/mentions";
 import { initials, LabelChip } from "./card-view";
 
 const field =
@@ -207,34 +208,40 @@ export function ChecklistSection({ card }: { card: Card }) {
 // 댓글 (+ @멘션)
 // ---------------------------------------------------------------
 function CommentBody({ body, members }: { body: string; members: Member[] }) {
-  const parts = body.split(/(@\S+)/g);
+  // 본문은 항상 글자로만 보여준다. `@이름`은 실제 팀원 이름과 정확히 일치할 때만 강조한다.
+  const parts = splitMentions(body, members.map((m) => m.name));
   return (
     <p className="whitespace-pre-wrap break-words text-sm">
       {parts.map((part, i) =>
-        part.startsWith("@") && members.some((m) => part.slice(1).startsWith(m.name)) ? (
+        part.mention ? (
           <span key={i} className="rounded bg-blue-100 px-0.5 font-medium text-blue-700 dark:bg-blue-950 dark:text-blue-300">
-            {part}
+            {part.text}
           </span>
         ) : (
-          <span key={i}>{part}</span>
+          <span key={i}>{part.text}</span>
         ),
       )}
     </p>
   );
 }
 
+const MAX_COMMENT_LENGTH = 5000;
+
 export function CommentsSection({
   cardId,
   comments,
   members,
   me,
+  isAdmin,
 }: {
   cardId: string;
   comments: Comment[];
   members: Member[];
   me: string;
+  isAdmin: boolean;
 }) {
   const [text, setText] = useState("");
+  const [error, setError] = useState<string | null>(null);
   const [mention, setMention] = useState<string | null>(null); // 현재 입력 중인 @검색어
   const ref = useRef<HTMLTextAreaElement>(null);
   const byId = new Map(members.map((m) => [m.id, m]));
@@ -252,6 +259,11 @@ export function CommentsSection({
     const caret = el.selectionStart;
     const before = text.slice(0, caret).replace(/@(\S*)$/, `@${member.name} `);
     const next = before + text.slice(caret);
+    if (next.length > MAX_COMMENT_LENGTH) {
+      setMention(null);
+      setError(`댓글은 ${MAX_COMMENT_LENGTH.toLocaleString("ko-KR")}자까지 쓸 수 있습니다.`);
+      return;
+    }
     setText(next);
     setMention(null);
     requestAnimationFrame(() => {
@@ -263,9 +275,14 @@ export function CommentsSection({
   function submit() {
     const body = text.trim();
     if (!body) return;
+    if (body.length > MAX_COMMENT_LENGTH) {
+      setError(`댓글은 ${MAX_COMMENT_LENGTH.toLocaleString("ko-KR")}자까지 쓸 수 있습니다. 내용은 그대로 두었으니 줄여서 다시 등록해 주세요.`);
+      return;
+    }
     addComment(cardId, body);
     setText("");
     setMention(null);
+    setError(null);
   }
 
   return (
@@ -284,7 +301,7 @@ export function CommentsSection({
                 <div className="flex items-center gap-2 text-xs text-zinc-500">
                   <span className="font-medium text-zinc-700 dark:text-zinc-300">{author?.name ?? "알 수 없음"}</span>
                   <time dateTime={c.createdAt}>{relativeTime(c.createdAt)}</time>
-                  {c.userId === me && (
+                  {(c.userId === me || isAdmin) && (
                     <button
                       type="button"
                       className="ml-auto hover:text-red-600"
@@ -314,6 +331,7 @@ export function CommentsSection({
           className={field}
           onChange={(e) => {
             setText(e.target.value);
+            setError(null);
             detectMention(e.target.value, e.target.selectionStart);
           }}
           onKeyDown={(e) => {
@@ -347,6 +365,11 @@ export function CommentsSection({
           </ul>
         )}
       </div>
+      {error && (
+        <p role="alert" className="text-xs text-red-600">
+          {error}
+        </p>
+      )}
       <div className="flex justify-end">
         <button
           type="button"

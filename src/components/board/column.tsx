@@ -42,9 +42,10 @@ function SortableCard({
       {...listeners}
       onClick={onOpen}
       onKeyDown={(e) => {
-        // Enter: 상세 열기 / Space: dnd-kit 키보드 드래그 시작
-        if (e.key === "Enter") onOpen();
-        else listeners?.onKeyDown?.(e);
+        // Enter: 상세 열기(끌고 있는 동안은 열지 않음) / Space: dnd-kit 키보드 드래그 시작·종료
+        if (e.key === "Enter") {
+          if (!isDragging) onOpen();
+        } else listeners?.onKeyDown?.(e);
       }}
     >
       <CardView card={card} members={members} labels={labels} commentCount={commentCount} done={done} />
