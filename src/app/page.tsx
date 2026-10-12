@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { Suspense } from "react";
 import { BoardList } from "@/components/board-list";
 import { NotificationBell } from "@/components/notification-bell";
@@ -35,12 +36,17 @@ async function UserMenu() {
   } = await supabase.auth.getUser();
   const { data: profile } = await supabase
     .from("profiles")
-    .select("name")
+    .select("name, role")
     .eq("id", user?.id ?? "")
     .maybeSingle();
 
   return (
     <div className="flex items-center gap-3 text-sm">
+      {profile?.role === "admin" && (
+        <Link href="/members" className="rounded-md px-2 py-1 text-blue-600 hover:underline">
+          멤버 관리
+        </Link>
+      )}
       <span className="text-zinc-500">{profile?.name}</span>
       <form action="/auth/signout" method="post">
         <button className="rounded-md border border-zinc-300 px-3 py-1.5 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800">
