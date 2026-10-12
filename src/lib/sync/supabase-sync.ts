@@ -110,7 +110,10 @@ async function fetchAll(): Promise<AppState> {
     supabase.from("boards").select("id, name, archived"),
     supabase.from("columns").select("id, board_id, name, position, wip_limit"),
     supabase.from("labels").select("id, board_id, name, color"),
-    supabase.from("cards").select("id, board_id, column_id, title, description, position, priority, due_date, created_at"),
+    supabase
+      .from("cards")
+      .select("id, board_id, column_id, title, description, position, priority, due_date, created_at")
+      .is("deleted_at", null),
     supabase.from("card_assignees").select("card_id, user_id"),
     supabase.from("card_labels").select("card_id, label_id"),
     supabase.from("checklist_items").select("id, card_id, text, done, position"),
@@ -280,62 +283,139 @@ function sequentialKeys(n: number): string[] {
   return keys;
 }
 
-function planWrites(prev: AppState, next: AppState): { upserts: Write[]; deletes: Write[] } {
+interface Diff<T> {
+  upserts: T[];
+  removed: T[];
+  prevMap: Map<string, T>;
+}
+
+/** 이전 행과 비교해 바뀐 칸만 골라낸다 (다른 사람의 동시 수정을 덮어쓰지 않기 위해) */
+function diffFields<T>(old: T, cur: T, fields: [string, (t: T) => unknown][]): Record<string, unknown> {
+  const patch: Record<string, unknown> = {};
+  for (const [col, get] of fields) if (get(old) !== get(cur)) patch[col] = get(cur);
+  return patch;
+}
+
+/** 새 행은 전체를 저장하고, 기존 행은 바뀐 칸만 수정한다 */
+function planUpserts<T extends { id: string }>(
+  table: string,
+  d: Diff<T>,
+  full: (x: T) => Record<string, unknown>,
+  changed: (old: T, x: T) => Record<string, unknown>,
+  out: Write[],
+) {
+  const created = d.upserts.filter((x) => !d.prevMap.has(x.id));
+  if (created.length) out.push(() => supabase.from(table).upsert(created.map(full)));
+  for (const x of d.upserts) {
+    const old = d.prevMap.get(x.id);
+    if (!old) continue;
+    const patch = changed(old, x);
+    if (Object.keys(patch).length) out.push(() => supabase.from(table).update(patch).eq("id", x.id));
+  }
+}
+
+/** 지운 행 수가 요청한 수보다 적으면(권한 없음 등) 오류로 처리한다 */
+function strictDelete(table: string, idList: string[]): Write {
+  return async () => {
+    const { data, error } = await supabase.from(table).delete().in("id", idList).select("id");
+    if (error) return { error };
+    if ((data?.length ?? 0) < idList.length)
+      return { error: { message: `${table}: 일부 행을 지우지 못했습니다 (권한이 없거나 이미 삭제됨)` } };
+    return { error: null };
+  };
+}
+
+/** 카드는 행을 지우지 않고 deleted_at 만 표시한다 (다른 멤버의 댓글이 연쇄 삭제되지 않게) */
+function softDeleteCards(idList: string[]): Write {
+  return async () => {
+    const { data, error } = await supabase
+      .from("cards")
+      .update({ deleted_at: new Date().toISOString() })
+      .in("id", idList)
+      .select("id");
+    if (error) return { error };
+    if ((data?.length ?? 0) < idList.length)
+      return { error: { message: "cards: 일부 카드를 삭제하지 못했습니다 (권한이 없거나 이미 삭제됨)" } };
+    return { error: null };
+  };
+}
+
+/** 이전/현재 상태를 비교해 DB 에 보낼 쓰기 목록을 만든다 (시험을 위해 내보냄) */
+export function planWrites(prev: AppState, next: AppState): { upserts: Write[]; deletes: Write[] } {
   const upserts: Write[] = [];
   const deletes: Write[] = [];
 
   // boards
   const b = diffById(prev.boards, next.boards);
-  if (b.upserts.length)
-    upserts.push(() =>
-      supabase.from("boards").upsert(b.upserts.map((x) => ({ id: x.id, name: x.name, archived: x.archived }))),
-    );
-  if (b.removed.length) deletes.push(() => supabase.from("boards").delete().in("id", ids(b.removed)));
+  planUpserts(
+    "boards",
+    b,
+    (x) => ({ id: x.id, name: x.name, archived: x.archived }),
+    (o, x) => diffFields(o, x, [["name", (t) => t.name], ["archived", (t) => t.archived]]),
+    upserts,
+  );
+  if (b.removed.length) deletes.push(strictDelete("boards", ids(b.removed)));
 
   // labels
   const l = diffById(prev.labels, next.labels);
-  if (l.upserts.length)
-    upserts.push(() =>
-      supabase
-        .from("labels")
-        .upsert(l.upserts.map((x) => ({ id: x.id, board_id: x.boardId, name: x.name, color: x.color }))),
-    );
-  if (l.removed.length) deletes.push(() => supabase.from("labels").delete().in("id", ids(l.removed)));
+  planUpserts(
+    "labels",
+    l,
+    (x) => ({ id: x.id, board_id: x.boardId, name: x.name, color: x.color }),
+    (o, x) => diffFields(o, x, [["name", (t) => t.name], ["color", (t) => t.color]]),
+    upserts,
+  );
+  if (l.removed.length) deletes.push(strictDelete("labels", ids(l.removed)));
 
   // columns
   const c = diffById(prev.columns, next.columns);
-  if (c.upserts.length)
-    upserts.push(() =>
-      supabase.from("columns").upsert(
-        c.upserts.map((x) => ({
-          id: x.id,
-          board_id: x.boardId,
-          name: x.name,
-          position: x.position,
-          wip_limit: x.wipLimit,
-        })),
-      ),
-    );
-  if (c.removed.length) deletes.push(() => supabase.from("columns").delete().in("id", ids(c.removed)));
+  planUpserts(
+    "columns",
+    c,
+    (x) => ({ id: x.id, board_id: x.boardId, name: x.name, position: x.position, wip_limit: x.wipLimit }),
+    (o, x) =>
+      diffFields(o, x, [
+        ["name", (t) => t.name],
+        ["position", (t) => t.position],
+        ["wip_limit", (t) => t.wipLimit],
+      ]),
+    upserts,
+  );
+  if (c.removed.length) deletes.push(strictDelete("columns", ids(c.removed)));
+  const removedColumnIds = new Set(ids(c.removed));
+  const removedBoardIds = new Set(ids(b.removed));
+  const createdColumnIds = new Set(c.upserts.filter((x) => !c.prevMap.has(x.id)).map((x) => x.id));
 
   // cards + 담당자/라벨/체크리스트
   const k = diffById(prev.cards, next.cards);
-  if (k.upserts.length)
-    upserts.push(() =>
-      supabase.from("cards").upsert(
-        k.upserts.map((x) => ({
-          id: x.id,
-          board_id: x.boardId,
-          column_id: x.columnId,
-          title: x.title,
-          description: x.description,
-          position: x.position,
-          priority: x.priority,
-          due_date: x.dueDate,
-        })),
-      ),
-    );
-  if (k.removed.length) deletes.push(() => supabase.from("cards").delete().in("id", ids(k.removed)));
+  planUpserts(
+    "cards",
+    k,
+    (x) => ({
+      id: x.id,
+      board_id: x.boardId,
+      column_id: x.columnId,
+      title: x.title,
+      description: x.description,
+      position: x.position,
+      priority: x.priority,
+      due_date: x.dueDate,
+      deleted_at: null, // 소프트 삭제된 카드를 실행 취소로 되살릴 때 표시를 지운다
+    }),
+    (o, x) =>
+      diffFields(o, x, [
+        ["column_id", (t) => t.columnId],
+        ["title", (t) => t.title],
+        ["description", (t) => t.description],
+        ["position", (t) => t.position],
+        ["priority", (t) => t.priority],
+        ["due_date", (t) => t.dueDate],
+      ]),
+    upserts,
+  );
+  // 컬럼·보드가 함께 지워지는 경우는 DB 연쇄 삭제에 맡기고, 카드만 지울 때는 소프트 삭제한다
+  const softDeleted = k.removed.filter((x) => !removedColumnIds.has(x.columnId) && !removedBoardIds.has(x.boardId));
+  if (softDeleted.length) deletes.push(softDeleteCards(ids(softDeleted)));
 
   for (const card of k.upserts) {
     const old = k.prevMap.get(card.id);
@@ -384,13 +464,24 @@ function planWrites(prev: AppState, next: AppState): { upserts: Write[]; deletes
 
   // comments
   const m = diffById(prev.comments, next.comments);
-  if (m.upserts.length)
+  const nextCardById = new Map(next.cards.map((x) => [x.id, x]));
+  const createdCardIds = new Set(k.upserts.filter((x) => !k.prevMap.has(x.id)).map((x) => x.id));
+  const commentRows = m.upserts.filter((x) => {
+    // 소프트 삭제에서 되살린 카드의 댓글은 DB 에 그대로 있으므로 다시 쓰지 않는다.
+    // (컬럼 삭제를 되돌리는 경우에만 DB 에서 사라졌으므로 내가 쓴 댓글에 한해 복원한다)
+    if (!createdCardIds.has(x.cardId)) return true;
+    const card = nextCardById.get(x.cardId);
+    return !!card && createdColumnIds.has(card.columnId) && x.userId === next.me;
+  });
+  if (commentRows.length)
     upserts.push(() =>
       supabase
         .from("comments")
-        .upsert(m.upserts.map((x) => ({ id: x.id, card_id: x.cardId, user_id: x.userId, body: x.body }))),
+        .upsert(commentRows.map((x) => ({ id: x.id, card_id: x.cardId, user_id: x.userId, body: x.body }))),
     );
-  if (m.removed.length) deletes.push(() => supabase.from("comments").delete().in("id", ids(m.removed)));
+  // 카드가 함께 지워진 경우의 댓글은 카드에 딸려 보존되므로 건드리지 않는다
+  const removedComments = m.removed.filter((x) => nextCardById.has(x.cardId));
+  if (removedComments.length) deletes.push(strictDelete("comments", ids(removedComments)));
 
   // 알림 읽음 처리
   const oldNotifs = new Map(prev.notifications.map((n) => [n.id, n]));
@@ -417,6 +508,7 @@ function planWrites(prev: AppState, next: AppState): { upserts: Write[]; deletes
 // 쓰기 큐 / 에러 처리
 // ---------------------------------------------------------------
 let pending = 0;
+let writeSeq = 0; // 쓰기가 시작될 때마다 올라가는 번호
 let queue: Promise<void> = Promise.resolve();
 let needsRefetch = false;
 const errorListeners = new Set<(message: string) => void>();
@@ -438,6 +530,7 @@ function enqueue(prev: AppState, next: AppState) {
   const { upserts, deletes } = planWrites(prev, next);
   if (upserts.length + deletes.length === 0) return;
 
+  writeSeq++;
   pending++;
   queue = queue
     .then(async () => {
@@ -473,10 +566,16 @@ async function refetch() {
     return;
   }
   needsRefetch = false;
+  const seq = writeSeq;
   try {
     const next = await fetchAll();
     if (pending > 0) {
       needsRefetch = true; // 조회 중에 쓰기가 시작됨 → 낙관적 상태 유지
+      return;
+    }
+    if (writeSeq !== seq) {
+      // 조회하는 사이에 쓰기가 시작되고 끝났다 → 이 결과는 쓰기 전 상태이므로 버리고 다시 읽는다
+      scheduleRefetch();
       return;
     }
     replaceState(next);
